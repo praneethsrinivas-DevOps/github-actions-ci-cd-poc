@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-nginx-deployment
+  namespace: nginx-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-nginx
+  template:
+    metadata:
+      labels:
+        app: my-nginx
+    spec:
+      containers:
+        - name: nginx-container
+          image: ghcr.io/praneethsrinivas-devops/devops-ci-cd-project:1.0
+          imagePullPolicy: Never   # IMPORTANT for local images
+          ports:
+            - containerPort: 80
+      imagePullSecrets:
+        - name: github-pat-secret
