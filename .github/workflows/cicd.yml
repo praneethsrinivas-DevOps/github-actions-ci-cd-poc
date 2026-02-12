@@ -15,7 +15,7 @@ on:
 
 jobs:
   build-deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     env:
       GITHUB_USER: praneethsrinivas-devops
