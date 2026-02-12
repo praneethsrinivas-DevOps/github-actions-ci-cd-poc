@@ -1,0 +1,97 @@
+name: DevOps CI-CD Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Select branch to deploy"
+        required: true
+        default: develop
+        type: choice
+        options:
+          - develop
+          - test
+          - production
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_USER: praneethsrinivas-devops
+      IMAGE_NAME: devops-ci-cd-project
+      REGISTRY: ghcr.io
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.branch }}
+
+    - name: Set Environment based on branch
+      run: |
+        BRANCH=${{ github.event.inputs.branch }}
+
+        if [ "$BRANCH" = "develop" ]; then
+          echo "DEPLOY_ENV=DEV" >> $GITHUB_ENV
+          echo "NAMESPACE=nginx-dev" >> $GITHUB_ENV
+        elif [ "$BRANCH" = "test" ]; then
+          echo "DEPLOY_ENV=QA" >> $GITHUB_ENV
+          echo "NAMESPACE=nginx-qa" >> $GITHUB_ENV
+        elif [ "$BRANCH" = "production" ]; then
+          echo "DEPLOY_ENV=PROD" >> $GITHUB_ENV
+          echo "NAMESPACE=nginx-prod" >> $GITHUB_ENV
+        fi
+
+    - name: Generate image tag
+      run: |
+        COMMIT=$(git rev-parse --short HEAD)
+        TAG=${{ github.event.inputs.branch }}-$COMMIT-${{ github.run_number }}
+        FULL_IMAGE=${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/${{ env.IMAGE_NAME }}:$TAG
+
+        echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
+        echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+
+        echo "Using image: $FULL_IMAGE"
+
+    - name: Build Docker image
+      run: docker build -t $FULL_IMAGE .
+
+    - name: Login to GHCR
+      run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ env.GITHUB_USER }} --password-stdin
+
+    - name: Push Docker image
+      run: docker push $FULL_IMAGE
+
+    - name: Setup kubeconfig
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBECONFIG_DATA }}" > ~/.kube/config
+
+    - name: Deploy to Kubernetes
+      run: |
+        echo "Deploying to $DEPLOY_ENV"
+        kubectl apply -f nginx-deployment.yaml -n $NAMESPACE
+        kubectl apply -f nginx-service.yaml -n $NAMESPACE
+        kubectl rollout status deployment/my-nginx-deployment -n $NAMESPACE
+
+    - name: Update deployment yaml
+      run: |
+        sed -i "s|image:.*|image: $FULL_IMAGE|g" nginx-deployment.yaml
+
+        git config user.name "github-actions"
+        git config user.email "actions@github.com"
+
+        git add nginx-deployment.yaml
+        git commit -m "Updated image to $IMAGE_TAG" || echo "No changes"
+        git push origin HEAD:${{ github.event.inputs.branch }}
+
+    - name: Success message
+      if: success()
+      run: |
+        echo "SUCCESS: $DEPLOY_ENV deployed"
+        echo "Image: $FULL_IMAGE"
+
+    - name: Failure message
+      if: failure()
+      run: echo "FAILED - check logs"
