@@ -16,7 +16,7 @@ spec:
       containers:
         - name: nginx-container
           image: ghcr.io/praneethsrinivas-devops/devops-ci-cd-project:1.0
-          imagePullPolicy: Never   # IMPORTANT for local images
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
       imagePullSecrets:
