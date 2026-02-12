@@ -86,17 +86,6 @@ jobs:
         kubectl apply -f nginx-service.yaml -n $NAMESPACE
         kubectl rollout status deployment/my-nginx-deployment -n $NAMESPACE
 
-    - name: Update deployment yaml
-      run: |
-        sed -i "s|image:.*|image: $FULL_IMAGE|g" nginx-deployment.yaml
-
-        git config user.name "github-actions"
-        git config user.email "actions@github.com"
-
-        git add nginx-deployment.yaml
-        git commit -m "Updated image to $IMAGE_TAG" || echo "No changes"
-        git push origin HEAD:${{ github.event.inputs.branch }}
-
     - name: Success message
       if: success()
       run: |
