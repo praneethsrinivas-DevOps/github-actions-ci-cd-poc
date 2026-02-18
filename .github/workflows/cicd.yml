@@ -103,8 +103,11 @@ jobs:
           FULL_IMAGE="${{ needs.prepare.outputs.full_image }}"
           IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
 
-          # Use a Linux-friendly sed invocation on self-hosted runners
-          sed -i "s|image:.*|image: ${FULL_IMAGE}|g" nginx-deployment.yaml
+          if [[ "$(uname -s)" == "Darwin" ]]; then
+            sed -i '' -e "s|image:.*|image: ${FULL_IMAGE}|g" nginx-deployment.yaml
+          else
+            sed -i -e "s|image:.*|image: ${FULL_IMAGE}|g" nginx-deployment.yaml
+          fi
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
