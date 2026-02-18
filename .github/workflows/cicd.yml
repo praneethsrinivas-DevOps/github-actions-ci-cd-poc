@@ -1,4 +1,4 @@
-name: DevOps CI-CD Pipeline
+name: DevOps CI-CD Pipeline (Multi-stage)
 
 on:
   workflow_dispatch:
@@ -8,90 +8,143 @@ on:
         required: true
         default: develop
         type: choice
-        options:
-          - develop
-          - test
-          - production
+        options: [develop, test, production]
+
+env:
+  GITHUB_USER: praneethsrinivas-devops
+  IMAGE_NAME: devops-ci-cd-project
+  REGISTRY: ghcr.io
 
 jobs:
-  build-deploy:
+  prepare:
+    name: Prepare (set env + tag)
     runs-on: self-hosted
-
-    env:
-      GITHUB_USER: praneethsrinivas-devops
-      IMAGE_NAME: devops-ci-cd-project
-      REGISTRY: ghcr.io
-
+    outputs:
+      deploy_env: ${{ steps.setenv.outputs.deploy_env }}
+      namespace: ${{ steps.setenv.outputs.namespace }}
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+      full_image: ${{ steps.tag.outputs.full_image }}
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        ref: ${{ github.event.inputs.branch }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
-    - name: Set Environment based on branch
-      run: |
-        BRANCH=${{ github.event.inputs.branch }}
+      - name: Set Environment based on branch
+        id: setenv
+        shell: bash
+        run: |
+          BRANCH="${{ github.event.inputs.branch }}"
+          if [ "$BRANCH" = "develop" ]; then
+            echo "deploy_env=DEV" >> $GITHUB_OUTPUT
+            echo "namespace=nginx-dev" >> $GITHUB_OUTPUT
+          elif [ "$BRANCH" = "test" ]; then
+            echo "deploy_env=QA" >> $GITHUB_OUTPUT
+            echo "namespace=nginx-qa" >> $GITHUB_OUTPUT
+          elif [ "$BRANCH" = "production" ]; then
+            echo "deploy_env=PROD" >> $GITHUB_OUTPUT
+            echo "namespace=nginx-prod" >> $GITHUB_OUTPUT
+          fi
 
-        if [ "$BRANCH" = "develop" ]; then
-          echo "DEPLOY_ENV=DEV" >> $GITHUB_ENV
-          echo "NAMESPACE=nginx-dev" >> $GITHUB_ENV
-        elif [ "$BRANCH" = "test" ]; then
-          echo "DEPLOY_ENV=QA" >> $GITHUB_ENV
-          echo "NAMESPACE=nginx-qa" >> $GITHUB_ENV
-        elif [ "$BRANCH" = "production" ]; then
-          echo "DEPLOY_ENV=PROD" >> $GITHUB_ENV
-          echo "NAMESPACE=nginx-prod" >> $GITHUB_ENV
-        fi
+      - name: Generate image tag
+        id: tag
+        shell: bash
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          TAG="${{ github.event.inputs.branch }}-$COMMIT-${{ github.run_number }}"
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/${{ env.IMAGE_NAME }}:$TAG"
+          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
+          echo "full_image=$FULL_IMAGE" >> $GITHUB_OUTPUT
+          echo "Using image: $FULL_IMAGE"
 
-    - name: Generate image tag
-      run: |
-        COMMIT=$(git rev-parse --short HEAD)
-        TAG=${{ github.event.inputs.branch }}-$COMMIT-${{ github.run_number }}
-        FULL_IMAGE=${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/${{ env.IMAGE_NAME }}:$TAG
+  build:
+    name: Build Docker image
+    runs-on: self-hosted
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
-        echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
-        echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+      - name: Build Docker image
+        shell: bash
+        run: |
+          docker build -t "${{ needs.prepare.outputs.full_image }}" .
 
-        echo "Using image: $FULL_IMAGE"
+  push:
+    name: Push image to GHCR
+    runs-on: self-hosted
+    needs: [prepare, build]
+    steps:
+      - name: Login to GHCR
+        shell: bash
+        run: |
+          echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ env.GITHUB_USER }}" --password-stdin
 
-    - name: Build Docker image
-      run: docker build -t $FULL_IMAGE .
+      - name: Push Docker image
+        shell: bash
+        run: |
+          docker push "${{ needs.prepare.outputs.full_image }}"
 
-    - name: Login to GHCR
-      run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ env.GITHUB_USER }} --password-stdin
+  update-manifest:
+    name: Update manifest in repo (image tag)
+    runs-on: self-hosted
+    needs: [prepare, push]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
-    - name: Push Docker image
-      run: docker push $FULL_IMAGE
+      - name: Update deployment yaml
+        shell: bash
+        run: |
+          FULL_IMAGE="${{ needs.prepare.outputs.full_image }}"
+          IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
 
-    - name: Setup kubeconfig
-      run: |
-        mkdir -p ~/.kube
-        echo "${{ secrets.KUBECONFIG_DATA }}" > ~/.kube/config
+          # Use a Linux-friendly sed invocation on self-hosted runners
+          sed -i "s|image:.*|image: ${FULL_IMAGE}|g" nginx-deployment.yaml
 
-    - name: Update deployment yaml
-      run: |
-        sed -i '' "s|image:.*|image: $FULL_IMAGE|g" nginx-deployment.yaml
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add nginx-deployment.yaml
+          git commit -m "Updated image to ${IMAGE_TAG}" || echo "No changes"
+          git push origin "HEAD:${{ github.event.inputs.branch }}"
 
-        git config user.name "github-actions"
-        git config user.email "actions@github.com"
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: self-hosted
+    needs: [prepare, update-manifest]
+    environment: ${{ needs.prepare.outputs.deploy_env }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
-        git add nginx-deployment.yaml
-        git commit -m "Updated image to $IMAGE_TAG" || echo "No changes"
-        git push origin HEAD:${{ github.event.inputs.branch }}
+      - name: Setup kubeconfig
+        shell: bash
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_DATA }}" > ~/.kube/config
 
-    - name: Deploy to Kubernetes
-      run: |
-        echo "Deploying to $DEPLOY_ENV"
-        kubectl apply -f nginx-deployment.yaml -n $NAMESPACE
-        kubectl apply -f nginx-service.yaml -n $NAMESPACE
-        kubectl rollout status deployment/my-nginx-deployment -n $NAMESPACE
+      - name: Deploy to Kubernetes
+        shell: bash
+        run: |
+          echo "Deploying to ${{ needs.prepare.outputs.deploy_env }}"
+          kubectl apply -f nginx-deployment.yaml -n "${{ needs.prepare.outputs.namespace }}"
+          kubectl apply -f nginx-service.yaml -n "${{ needs.prepare.outputs.namespace }}"
+          kubectl rollout status deployment/my-nginx-deployment -n "${{ needs.prepare.outputs.namespace }}"
 
-    - name: Success message
-      if: success()
-      run: |
-        echo "SUCCESS: $DEPLOY_ENV deployed"
-        echo "Image: $FULL_IMAGE"
+      - name: Success message
+        if: success()
+        shell: bash
+        run: |
+          echo "SUCCESS: ${{ needs.prepare.outputs.deploy_env }} deployed"
+          echo "Image: ${{ needs.prepare.outputs.full_image }}"
 
-    - name: Failure message
-      if: failure()
-      run: echo "FAILED - check logs"
+      - name: Failure message
+        if: failure()
+        shell: bash
+        run: echo "FAILED - check logs"
