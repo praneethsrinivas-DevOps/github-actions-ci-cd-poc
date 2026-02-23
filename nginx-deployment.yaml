@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: nginx-container
-          image: ghcr.io/praneethsrinivas-devops/devops-ci-cd-project:develop-a5a3bd8-7
+          image: ghcr.io/praneethsrinivas-devops/devops-ci-cd-project:develop-a108831-10
           imagePullPolicy: Always
           ports:
             - containerPort: 80
