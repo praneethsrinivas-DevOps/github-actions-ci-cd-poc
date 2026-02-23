@@ -1,4 +1,4 @@
-name: DevOps CI-CD Pipeline (Multi-stage)
+name: Enterprise CI-CD Pipeline
 
 on:
   workflow_dispatch:
@@ -10,29 +10,17 @@ on:
         type: choice
         options: [develop, test, production]
 
-env:
-  GITHUB_USER: praneethsrinivas-devops
-  IMAGE_NAME: devops-ci-cd-project
-  REGISTRY: ghcr.io
-
 jobs:
+
   prepare:
-    name: Prepare (set env + tag)
     runs-on: self-hosted
     outputs:
       deploy_env: ${{ steps.setenv.outputs.deploy_env }}
       namespace: ${{ steps.setenv.outputs.namespace }}
-      image_tag: ${{ steps.tag.outputs.image_tag }}
-      full_image: ${{ steps.tag.outputs.full_image }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
 
-      - name: Set Environment based on branch
+    steps:
+      - name: Set environment
         id: setenv
-        shell: bash
         run: |
           BRANCH="${{ github.event.inputs.branch }}"
           if [ "$BRANCH" = "develop" ]; then
@@ -46,108 +34,34 @@ jobs:
             echo "namespace=nginx-prod" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate image tag
-        id: tag
-        shell: bash
-        run: |
-          COMMIT=$(git rev-parse --short HEAD)
-          TAG="${{ github.event.inputs.branch }}-$COMMIT-${{ github.run_number }}"
-          FULL_IMAGE="${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/${{ env.IMAGE_NAME }}:$TAG"
-          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
-          echo "full_image=$FULL_IMAGE" >> $GITHUB_OUTPUT
-          echo "Using image: $FULL_IMAGE"
 
-  build:
-    name: Build Docker image
-    runs-on: self-hosted
+  build_push:
     needs: prepare
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
+    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/build-push.yml@main
+    with:
+      image_name: devops-ci-cd-project
+      registry: ghcr.io
+      github_user: praneethsrinivas-devops
+      branch: ${{ github.event.inputs.branch }}
+    secrets:
+      ghcr_token: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Build Docker image
-        shell: bash
-        run: |
-          docker build -t "${{ needs.prepare.outputs.full_image }}" .
 
-  push:
-    name: Push image to GHCR
-    runs-on: self-hosted
-    needs: [prepare, build]
-    steps:
-      - name: Login to GHCR
-        shell: bash
-        run: |
-          echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ env.GITHUB_USER }}" --password-stdin
+  update_manifest:
+    needs: build_push
+    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/update-manifest.yml@main
+    with:
+      branch: ${{ github.event.inputs.branch }}
+      full_image: ${{ needs.build_push.outputs.full_image }}
+      image_tag: ${{ needs.build_push.outputs.image_tag }}
 
-      - name: Push Docker image
-        shell: bash
-        run: |
-          docker push "${{ needs.prepare.outputs.full_image }}"
-
-  update-manifest:
-    name: Update manifest in repo (image tag)
-    runs-on: self-hosted
-    needs: [prepare, push]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
-
-      - name: Update deployment yaml
-        shell: bash
-        run: |
-          FULL_IMAGE="${{ needs.prepare.outputs.full_image }}"
-          IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
-
-          if [[ "$(uname -s)" == "Darwin" ]]; then
-            sed -i '' -e "s|image:.*|image: ${FULL_IMAGE}|g" nginx-deployment.yaml
-          else
-            sed -i -e "s|image:.*|image: ${FULL_IMAGE}|g" nginx-deployment.yaml
-          fi
-
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add nginx-deployment.yaml
-          git commit -m "Updated image to ${IMAGE_TAG}" || echo "No changes"
-          git push origin "HEAD:${{ github.event.inputs.branch }}"
 
   deploy:
-    name: Deploy to Kubernetes
-    runs-on: self-hosted
-    needs: [prepare, update-manifest]
-    environment: ${{ needs.prepare.outputs.deploy_env }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
-
-      - name: Setup kubeconfig
-        shell: bash
-        run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG_DATA }}" > ~/.kube/config
-
-      - name: Deploy to Kubernetes
-        shell: bash
-        run: |
-          echo "Deploying to ${{ needs.prepare.outputs.deploy_env }}"
-          kubectl apply -f nginx-deployment.yaml -n "${{ needs.prepare.outputs.namespace }}"
-          kubectl apply -f nginx-service.yaml -n "${{ needs.prepare.outputs.namespace }}"
-          kubectl rollout status deployment/my-nginx-deployment -n "${{ needs.prepare.outputs.namespace }}"
-
-      - name: Success message
-        if: success()
-        shell: bash
-        run: |
-          echo "SUCCESS: ${{ needs.prepare.outputs.deploy_env }} deployed"
-          echo "Image: ${{ needs.prepare.outputs.full_image }}"
-
-      - name: Failure message
-        if: failure()
-        shell: bash
-        run: echo "FAILED - check logs"
+    needs: [prepare, update_manifest]
+    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/deploy-k8s.yml@main
+    with:
+      branch: ${{ github.event.inputs.branch }}
+      deploy_env: ${{ needs.prepare.outputs.deploy_env }}
+      namespace: ${{ needs.prepare.outputs.namespace }}
+    secrets:
+      kubeconfig_data: ${{ secrets.KUBECONFIG_DATA }}
