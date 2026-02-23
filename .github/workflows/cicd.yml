@@ -37,7 +37,7 @@ jobs:
 
   build_push:
     needs: prepare
-    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/build-push.yml@main
+    uses: praneethsrinivas-devops/github-actions-workflows/.github/workflows/build-push.yml@main
     with:
       image_name: devops-ci-cd-project
       registry: ghcr.io
@@ -49,7 +49,7 @@ jobs:
 
   update_manifest:
     needs: build_push
-    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/update-manifest.yml@main
+    uses: praneethsrinivas-devops/github-actions-workflows/.github/workflows/update-manifest.yml@main
     with:
       branch: ${{ github.event.inputs.branch }}
       full_image: ${{ needs.build_push.outputs.full_image }}
@@ -58,7 +58,7 @@ jobs:
 
   deploy:
     needs: [prepare, update_manifest]
-    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/deploy-k8s.yml@main
+    uses: praneethsrinivas-devops/github-actions-workflows/.github/workflows/deploy-k8s.yml@main
     with:
       branch: ${{ github.event.inputs.branch }}
       deploy_env: ${{ needs.prepare.outputs.deploy_env }}
