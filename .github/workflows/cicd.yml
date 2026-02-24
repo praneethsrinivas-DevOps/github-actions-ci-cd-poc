@@ -1,43 +1,33 @@
-name: Enterprise CI-CD Pipeline
+name: Enterprise CI Pipeline
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Select branch to deploy"
         required: true
-        default: develop
-        type: choice
-        options: [develop, test, production]
+        type: string
 
 jobs:
 
   prepare:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
-      deploy_env: ${{ steps.setenv.outputs.deploy_env }}
-      namespace: ${{ steps.setenv.outputs.namespace }}
-
+      namespace: ${{ steps.set.outputs.namespace }}
     steps:
-      - name: Set environment
-        id: setenv
+      - id: set
         run: |
           BRANCH="${{ github.event.inputs.branch }}"
-          if [ "$BRANCH" = "develop" ]; then
-            echo "deploy_env=DEV" >> $GITHUB_OUTPUT
-            echo "namespace=nginx-dev" >> $GITHUB_OUTPUT
-          elif [ "$BRANCH" = "test" ]; then
-            echo "deploy_env=QA" >> $GITHUB_OUTPUT
+          if [ "$BRANCH" = "qa" ]; then
             echo "namespace=nginx-qa" >> $GITHUB_OUTPUT
           elif [ "$BRANCH" = "production" ]; then
-            echo "deploy_env=PROD" >> $GITHUB_OUTPUT
             echo "namespace=nginx-prod" >> $GITHUB_OUTPUT
+          else
+            echo "namespace=nginx-dev" >> $GITHUB_OUTPUT
           fi
-
 
   build_push:
     needs: prepare
-    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/build-push.yml@main
+    uses: praneethsrinivas-devops/github-actions-workflows/.github/workflows/build-push.yml@main
     with:
       image_name: devops-ci-cd-project
       registry: ghcr.io
@@ -46,22 +36,11 @@ jobs:
     secrets:
       ghcr_token: ${{ secrets.GHCR_TOKEN }}
 
-
-  update_manifest:
-    needs: build_push
-    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/update-manifest.yml@main
+  ci_k8s_test:
+    needs: [prepare, build_push]
+    uses: praneethsrinivas-devops/github-actions-workflows/.github/workflows/ci-k8s.yml@main
     with:
-      branch: ${{ github.event.inputs.branch }}
-      full_image: ${{ needs.build_push.outputs.full_image }}
-      image_tag: ${{ needs.build_push.outputs.image_tag }}
-
-
-  deploy:
-    needs: [prepare, update_manifest]
-    uses: praneethsrinivas-devops/devops-workflows/.github/workflows/deploy-k8s.yml@main
-    with:
-      branch: ${{ github.event.inputs.branch }}
-      deploy_env: ${{ needs.prepare.outputs.deploy_env }}
       namespace: ${{ needs.prepare.outputs.namespace }}
+      full_image: ${{ needs.build_push.outputs.full_image }}
     secrets:
-      kubeconfig_data: ${{ secrets.KUBECONFIG_DATA }}
+      ghcr_token: ${{ secrets.GHCR_TOKEN }}
