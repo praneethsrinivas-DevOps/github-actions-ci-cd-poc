@@ -13,7 +13,7 @@ on:
 jobs:
 
   prepare:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
       deploy_env: ${{ steps.setenv.outputs.deploy_env }}
       namespace: ${{ steps.setenv.outputs.namespace }}
