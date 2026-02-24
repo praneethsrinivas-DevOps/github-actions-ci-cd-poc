@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: Enterprise CI Pipeline
 
 on:
   workflow_dispatch:
@@ -12,18 +12,17 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      deploy_env: ${{ steps.set.outputs.deploy_env }}
       namespace: ${{ steps.set.outputs.namespace }}
     steps:
       - id: set
         run: |
           BRANCH="${{ github.event.inputs.branch }}"
           if [ "$BRANCH" = "qa" ]; then
-            echo "deploy_env=QA" >> $GITHUB_OUTPUT
             echo "namespace=nginx-qa" >> $GITHUB_OUTPUT
           elif [ "$BRANCH" = "production" ]; then
-            echo "deploy_env=PROD" >> $GITHUB_OUTPUT
             echo "namespace=nginx-prod" >> $GITHUB_OUTPUT
+          else
+            echo "namespace=nginx-dev" >> $GITHUB_OUTPUT
           fi
 
   build_push:
@@ -38,9 +37,10 @@ jobs:
       ghcr_token: ${{ secrets.GHCR_TOKEN }}
 
   ci_k8s_test:
-    needs: build_push
+    needs: [prepare, build_push]
     uses: praneethsrinivas-devops/github-actions-workflows/.github/workflows/ci-k8s.yml@main
     with:
-      image_tag: ${{ needs.build_push.outputs.image_tag }}
-      full_image: ${{ needs.build_push.outputs.full_image }}
       namespace: ${{ needs.prepare.outputs.namespace }}
+      full_image: ${{ needs.build_push.outputs.full_image }}
+    secrets:
+      ghcr_token: ${{ secrets.GHCR_TOKEN }}
